@@ -1,0 +1,540 @@
+---
+title: "Midterm data"
+format: html
+editor: visual
+---
+
+```{r}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(skimr)
+library(readxl)
+library(janitor)
+library(ggplot2)
+library(patchwork)
+```
+
+## 看一下資料
+
+```{r}
+# data link: https://www.kaggle.com/datasets/yogape/logistics-operations-database
+drivers = read_csv("raw/drivers.csv")
+view(drivers)
+```
+
+```{r}
+names(drivers)
+```
+
+## 計算年紀、年資
+
+```{r}
+library(lubridate) 
+
+drivers <- drivers %>%
+  mutate(age = 2024 - year(date_of_birth))
+```
+
+年資
+
+```{r}
+drivers <- drivers %>%
+  mutate(total_experience = (2024 - year(hire_date)) + years_experience)
+```
+
+刪除不合理資料
+
+```{r}
+drivers <- drivers %>%
+  filter(!is.na(age) & !is.na(total_experience)) %>%
+  filter(total_experience <= (age - 20))
+```
+
+#### Age distribution
+
+```{r}
+ggplot(drivers, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(
+    title = "Age Distribution of Drivers",
+    x = "Age",
+    y = "Number of Drivers"
+  ) +
+  theme_minimal()
+```
+
+#### total experience
+
+```{r}
+ggplot(drivers, aes(x = total_experience)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(
+    title = "Total Experience Distribution of Drivers",
+    x = "Total experience",
+    y = "Number of Drivers"
+  ) +
+  theme_minimal()
+```
+
+####年齡與年資
+
+```{r}
+ggplot(drivers %>% filter(!is.na(age) & !is.na(total_experience)), aes(x = age, y = total_experience)) +
+  geom_jitter(color = "steelblue", alpha = 0.6, width = 0.5, height = 0.5, size = 2.5) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Driver Demographics: Age vs. Total Experience",
+    x = "Driver Age (Years)",
+    y = "Total Experience (Years)"
+  ) +
+  theme_minimal()
+```
+
+## 準點率
+
+```{r}
+trips <- read_csv("raw/trips.csv")
+```
+
+```{r}
+delivery_events <- read_csv("raw/delivery_events.csv")
+```
+
+```{r}
+# 串接資料並計算
+driver_on_time_summary <- trips %>%
+  left_join(delivery_events, by = "trip_id") %>%
+  group_by(driver_id) %>%
+  summarize(
+    total_trips = n(),  
+    on_time_trips = sum(on_time_flag == TRUE, na.rm = TRUE), 
+    on_time_rate = on_time_trips / total_trips 
+  )
+
+# 併回主資料表
+drivers <- drivers %>%
+  left_join(driver_on_time_summary, by = "driver_id")
+```
+
+```{r}
+ggplot(drivers, aes(x = on_time_rate)) +
+  geom_density(fill = "seagreen", alpha = 0.5, color = "darkgreen") +
+  labs(
+    title = "Density Distribution of Driver On-Time Rates",
+    x = "On-Time Rate",
+    y = "Density"
+  ) +
+  scale_x_continuous(labels = scales::percent,limits = c(0.5, 0.6)) +
+  theme_minimal()
+```
+
+#### t-test: 年資與準點率是否相關
+
+```{r}
+ttest_ontimerate_experience <- drivers %>%
+  filter(!is.na(on_time_rate) & !is.na(total_experience)) %>%
+  mutate(experience_group = ifelse(total_experience >= 10, "Senior", "Junior"))
+
+t_result <- t.test(on_time_rate ~ experience_group, data = ttest_ontimerate_experience)
+
+print(t_result)
+```
+
+#### t-test: 年紀與準點率是否相關
+
+```{r}
+ttest_ontimerate_age <- drivers %>%
+  filter(!is.na(on_time_rate) & !is.na(age)) %>%
+  mutate(age_group = ifelse(age >= 50, "Old", "Young"))
+
+t_result <- t.test(on_time_rate ~ age_group, data = ttest_ontimerate_age)
+
+print(t_result)
+```
+
+年紀、準點率
+
+```{r}
+ggplot(drivers %>% filter(!is.na(age) & !is.na(on_time_rate)), aes(x = age, y = on_time_rate)) +
+  geom_point(color = "steelblue", alpha = 0.6, size = 3) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Driver Age on On-Time Rate",
+    x = "Driver Age (Years)",
+    y = "On-Time Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+```
+
+#### 考慮卡車因素
+
+```{r}
+trucks <- read_csv("raw/trucks.csv")
+
+# 計算每台卡車的「專屬準點率」與「車齡」
+truck_analysis <- trips %>%
+  # 併入交貨狀態
+  left_join(delivery_events, by = "trip_id") %>%
+  # 以「卡車(truck_id)」為單位進行分組計算準點率
+  group_by(truck_id) %>%
+  summarize(
+    total_trips = n(),
+    on_time_rate = sum(on_time_flag == 1, na.rm = TRUE) / total_trips
+  ) %>%
+  # 將卡車的基本資料併進來
+  left_join(trucks, by = "truck_id") %>%
+  mutate(truck_age = 2024 - year(acquisition_date)) %>%
+  filter(!is.na(on_time_rate) & !is.na(truck_age))
+```
+
+```{r}
+model_result <- lm(on_time_rate ~ truck_age, data = truck_analysis)
+summary(model_result)
+
+ggplot(truck_analysis, aes(x = truck_age, y = on_time_rate)) +
+  geom_point(color = "steelblue", alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", color = "darkred", se = FALSE) +
+  labs(
+    title = "Relationship Between Truck Age and On-Time Rate",
+    x = "Truck Age (Years)",
+    y = "On-Time Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+```
+
+## 出事率
+
+```{r}
+incidents = read_csv("raw/safety_incidents.csv")
+```
+
+#### 年資與出事率
+
+```{r}
+driver_counts <- drivers %>%
+  filter(!is.na(total_experience)) %>%
+  mutate(exp_group = cut(
+    total_experience, 
+    breaks = c(0, 5, 10, 15, 20, Inf), 
+    labels = c("0-4 years", "5-9 years", "10-14 years", "15-19 years", "20+ years"),
+    right = FALSE 
+  )) %>%
+  group_by(exp_group) %>%
+  summarize(total_drivers = n())
+
+incident_counts <- incidents %>%
+  left_join(drivers, by = "driver_id") %>%
+  filter(!is.na(total_experience)) %>%
+  mutate(exp_group = cut(
+    total_experience, 
+    breaks = c(0, 5, 10, 15, 20, Inf), 
+    labels = c("0-4 years", "5-9 years", "10-14 years", "15-19 years", "20+ years"),
+    right = FALSE
+  )) %>%
+  group_by(exp_group) %>%
+  summarize(total_incidents = n())
+
+incident_analysis_grouped <- driver_counts %>%
+  left_join(incident_counts, by = "exp_group") %>%
+  mutate(
+    total_incidents = replace_na(total_incidents, 0),
+    avg_incidents = total_incidents / total_drivers
+  )
+
+ggplot(incident_analysis_grouped, aes(x = exp_group, y = avg_incidents)) +
+  geom_col(fill = "indianred", alpha = 0.85) +
+  geom_text(aes(label = round(avg_incidents, 2)), vjust = -0, size = 4) +
+  labs(
+    title = "Average Safety Incidents by 5-Year Experience Groups",
+    x = "Driver Experience",
+    y = "Average Incidents per Driver"
+  ) +
+  theme_minimal()
+```
+
+#### 年齡與出事率
+
+```{r}
+driver_counts <- drivers %>%
+  filter(!is.na(age)) %>%
+  mutate(age_group = cut(
+    age, 
+    breaks = c(20, 30, 40, 50, 60, Inf), 
+    labels = c("20-29 years", "30-39 years", "40-49 years", "50-59 years", "60+ years"),
+    right = FALSE 
+  )) %>%
+  group_by(age_group) %>%
+  summarize(total_drivers = n())
+
+incident_counts <- incidents %>%
+  left_join(drivers, by = "driver_id") %>%
+  filter(!is.na(age)) %>%
+  mutate(age_group = cut(
+    age, 
+    breaks = c(20, 30, 40, 50, 60, Inf), 
+    labels = c("20-29 years", "30-39 years", "40-49 years", "50-59 years", "60+ years"),
+    right = FALSE
+  )) %>%
+  group_by(age_group) %>%
+  summarize(total_incidents = n())
+
+incident_analysis_grouped <- driver_counts %>%
+  left_join(incident_counts, by = "age_group") %>%
+  mutate(
+    total_incidents = replace_na(total_incidents, 0),
+    avg_incidents = total_incidents / total_drivers
+  )
+```
+
+```{r}
+ggplot(incident_analysis_grouped, aes(x = age_group, y = avg_incidents)) +
+  geom_col(fill = "indianred", alpha = 0.85) +
+  # vjust = -0.5 可以讓數字稍微浮在長條圖上方，視覺上更乾淨
+  geom_text(aes(label = round(avg_incidents, 2)), vjust = -0.5, size = 4) +
+  labs(
+    title = "Average Safety Incidents by Age Groups",
+    x = "Driver Age Group",
+    y = "Average Incidents per Driver"
+  ) +
+  theme_minimal()
+```
+
+#### t-test: 年齡與出事率
+
+```{r}
+driver_age_binary <- drivers %>%
+  filter(!is.na(age)) %>%
+  mutate(age_category = if_else(age >= 60, "60+", "Under 60")) %>%
+  left_join(
+    incidents %>%
+      group_by(driver_id) %>%
+      summarize(incident_count = n()),
+    by = "driver_id"
+  ) %>%
+  mutate(incident_count = replace_na(incident_count, 0))
+
+t_test_result <- t.test(incident_count ~ age_category, data = driver_age_binary)
+print(t_test_result)
+
+age_binary_summary <- driver_age_binary %>%
+  group_by(age_category) %>%
+  summarize(avg_incidents = mean(incident_count))
+```
+
+```{r}
+ggplot(age_binary_summary, aes(x = age_category, y = avg_incidents, fill = age_category)) +
+  geom_col(alpha = 0.8, width = 0.5) +
+  geom_text(aes(label = round(avg_incidents, 2)), vjust = -0, size = 5) +
+  scale_fill_manual(values = c("60+" = "indianred", "Under 60" = "steelblue")) +
+  labs(
+    title = "Safety Incident Comparison: Under 60 vs. 60+ Drivers",
+    x = "Driver Age Category",
+    y = "Average Incidents per Driver"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+regression_data <- drivers %>%
+  left_join(
+    incidents %>% 
+      group_by(driver_id) %>% 
+      summarize(incident_count = n()), 
+    by = "driver_id"
+  ) %>%
+  mutate(incident_count = replace_na(incident_count, 0)) %>%
+  filter(!is.na(total_experience))
+
+incident_model <- lm(incident_count ~ total_experience, data = regression_data)
+
+summary(incident_model)
+
+ggplot(regression_data, aes(x = total_experience, y = incident_count)) +
+  geom_jitter(color = "steelblue", alpha = 0.5, width = 0.2, height = 0.1) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Experience on Safety Incidents",
+    x = "Total Experience (Years)",
+    y = "Number of Incidents"
+  ) +
+  theme_minimal()
+```
+
+####卡車年紀與出事率
+
+```{r}
+truck_safety_data <- trucks %>%
+  mutate(truck_age = 2021 - year(acquisition_date)) %>%
+  left_join(
+    incidents %>% 
+      group_by(truck_id) %>% 
+      summarize(incident_count = n()), 
+    by = "truck_id"
+  ) %>%
+  mutate(incident_count = replace_na(incident_count, 0)) %>%
+  filter(!is.na(truck_age))
+
+ggplot(truck_safety_data, aes(x = truck_age, y = incident_count)) +
+  geom_jitter(color = "steelblue", alpha = 0.6, width = 0.2, height = 0.1) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Truck Age on Safety Incidents",
+    x = "Truck Age (Years)",
+    y = "Number of Incidents"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+correlation_test <- cor.test(truck_safety_data$truck_age, truck_safety_data$incident_count)
+
+print(correlation_test)
+```
+
+```{r}
+truck_safety_data_corrected <- trucks %>%
+  mutate(truck_age = 2024 - year(acquisition_date)) %>%
+  left_join(
+    incidents %>% 
+      group_by(truck_id) %>% 
+      summarize(incident_count = n()), 
+    by = "truck_id"
+  ) %>%
+  mutate(incident_count = replace_na(incident_count, 0)) %>%
+  filter(!is.na(truck_age) & truck_age > 0) %>%
+  
+  mutate(incident_rate_per_year = incident_count / truck_age)
+
+ggplot(truck_safety_data_corrected, aes(x = truck_age, y = incident_rate_per_year)) +
+  geom_jitter(color = "steelblue", alpha = 0.6, width = 0.2, height = 0.05) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Truck Age on Annual Incident Rate",
+    x = "Truck Age (Years)",
+    y = "Average Incidents Per Year" # Y 軸變為每年平均次數
+  ) +
+  theme_minimal()
+```
+
+## Dashboard
+
+#### 1. 標題(15%)
+
+```{r}
+title_plot <- ggplot() + 
+  annotate("text", x = 0.5, y = 0.5, label = "Does a Driver's Age Affect Their Performance?", size = 18, fontface = "bold") + 
+  theme_void()
+```
+
+#### 2. 子標題(10%)
+
+```{r}
+sub1 <- ggplot() + annotate("text", x = 0.5, y = 0.5, label = "Driver Demographics", size = 10, color = "grey30", fontface = "bold") + theme_void()
+sub2 <- ggplot() + annotate("text", x = 0.5, y = 0.5, label = "Age vs. Safety Risk", size = 10, color = "grey30", fontface = "bold") + theme_void()
+sub3 <- ggplot() + annotate("text", x = 0.5, y = 0.5, label = "Age vs. Efficiency", size = 10, color = "grey30", fontface = "bold") + theme_void()
+```
+
+#### 3. 結論(15%)
+
+```{r}
+conc <- ggplot() + 
+  annotate("text", x = 0.5, y = 0.5, 
+           label = "Key Takeaway \nAlthough we might expect older drivers to have slower reaction times and lower levels of concentration, statistical tests \nconfirm that drivers aged 60 and above do not have significantly higher incident rates or cause delivery delays.", 
+           size = 8, lineheight = 0.8) + 
+  theme_void() +
+  theme(panel.background = element_rect(fill = "gray95", color = NA)) 
+```
+
+#### 4. 圖表區塊
+
+```{r}
+# 34% 上左欄
+plot1 <- ggplot(drivers, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(
+    title = "Age Distribution of Drivers",
+    x = "Age",
+    y = "Number of Drivers"
+  ) +
+  theme_minimal()
+
+# 34% 上中欄
+plot2 <- ggplot(incident_analysis_grouped, aes(x = age_group, y = avg_incidents)) +
+  geom_col(fill = "indianred", alpha = 0.85) +
+  geom_text(aes(label = round(avg_incidents, 2)), vjust = -0.5, size = 4) +
+  labs(
+    title = "Average Safety Incidents by Age Groups",
+    x = "Driver Age Group",
+    y = "Average Incidents per Driver"
+  ) +
+  theme_minimal()
+# 33% 上右欄
+plot3 <- ggplot(drivers, aes(x = on_time_rate)) +
+  # 畫出密度曲線，fill 設定內部填色，alpha 設定透明度
+  geom_density(fill = "seagreen", alpha = 0.5, color = "darkgreen") +
+  labs(
+    title = "Density Distribution of Driver On-Time Rates",
+    x = "On-Time Rate",
+    y = "Density"
+  ) +
+  scale_x_continuous(labels = scales::percent,limits = c(0.5, 0.6)) +
+  theme_minimal()
+
+# 34% 下中欄
+plot5 <- ggplot(truck_safety_data, aes(x = truck_age, y = incident_count)) +
+  # 使用 geom_jitter 讓點稍微散開，避免相同車齡/次數的點全部重疊
+  geom_jitter(color = "steelblue", alpha = 0.6, width = 0.2, height = 0.1) +
+  # 畫出深紅色的線性迴歸趨勢線
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Truck Age on Safety Incidents",
+    x = "Truck Age (Years)",
+    y = "Number of Incidents",
+    caption = "No significant correlation between truck age and safety incidents." 
+  ) +
+  theme_minimal()
+# 33% 下右欄
+plot6 <- ggplot(drivers %>% filter(!is.na(age) & !is.na(on_time_rate)), aes(x = age, y = on_time_rate)) +
+  geom_point(color = "steelblue", alpha = 0.6, size = 3) +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  labs(
+    title = "Impact of Driver Age on On-Time Rate",
+    x = "Driver Age (Years)",
+    y = "On-Time Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+```
+
+#### 5. 組合 Dashboard
+
+```{r}
+#| fig-width: 18
+#| fig-height: 12
+
+layout_design <- "
+  AAA
+  BCD
+  EFG
+  EHI
+  JJJ
+"
+
+dashboard <- title_plot + 
+             sub1 + sub2 + sub3 +
+             plot1 + plot2 + plot3 + 
+             plot5 + plot6 + 
+             conc +
+  plot_layout(
+    design = layout_design,
+    heights = c(0.15, 0.05, 0.35, 0.35, 0.10), 
+    widths = c(0.33, 0.34, 0.33)         
+  )
+
+dashboard
+```
+
